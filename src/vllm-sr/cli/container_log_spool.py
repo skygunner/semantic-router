@@ -16,7 +16,16 @@ LOG_SPOOL_READER_DIR = "/var/log/vllm-sr"
 LOG_SPOOL_PRODUCER_FILE = "/var/log/vllm-sr-producer/current.log"
 LOG_SPOOL_ROOT_ENV = "VLLM_SR_LOG_SPOOL_DIR"
 LOG_SPOOL_GID_ENV = "VLLM_SR_LOG_SPOOL_GID"
-LOG_SPOOL_REQUIRED_TOOLS = ("awk", "cat", "mkfifo", "mktemp", "rm", "tail", "wc")
+LOG_SPOOL_REQUIRED_TOOLS = (
+    "awk",
+    "cat",
+    "mkfifo",
+    "mktemp",
+    "rm",
+    "sleep",
+    "tail",
+    "wc",
+)
 
 
 # The producer wrapper keeps normal container stdout/stderr while retaining a
@@ -49,7 +58,7 @@ if [ ! -f "$spool_file" ] || [ -L "$spool_file" ]; then
     echo "bounded log spool: producer file is unavailable or unsafe" >&2
     exit 73
 fi
-for required_tool in awk cat mkfifo mktemp rm tail wc; do
+for required_tool in awk cat mkfifo mktemp rm sleep tail wc; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "bounded log spool: required runtime tool is unavailable: $required_tool" >&2
         exit 69
@@ -65,6 +74,7 @@ trim_file=$work_dir/trim.log
 fifo=$work_dir/output.fifo
 child_pid=
 relay_pid=
+signal_status=
 
 cleanup() {
     if [ -n "$relay_pid" ]; then kill "$relay_pid" 2>/dev/null || true; fi
@@ -72,9 +82,44 @@ cleanup() {
     rm -rf "$work_dir"
 }
 forward_signal() {
+    signal_status=$1
     if [ -n "$child_pid" ]; then kill -TERM "$child_pid" 2>/dev/null || true; fi
 }
-trap forward_signal HUP INT TERM
+# No POSIX wait variant watches two children, and a TERM-ignoring service
+# would hang a bare wait forever: probe liveness, keep the TERM grace short
+# and bounded, then escalate to KILL so every shutdown path is finite.
+terminate_child() {
+    [ -n "$child_pid" ] || return 0
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+        wait "$child_pid"
+        _tc_status=$?
+        child_pid=
+        return "$_tc_status"
+    fi
+    # The signal trap has already forwarded TERM. Sending another during
+    # Python service shutdown can re-enter its handler and corrupt log output.
+    if [ -z "$signal_status" ]; then
+        kill -TERM "$child_pid" 2>/dev/null || true
+    fi
+    _tc_grace=0
+    while [ "$_tc_grace" -lt 20 ]; do
+        if ! kill -0 "$child_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+        _tc_grace=$((_tc_grace + 1))
+    done
+    if kill -0 "$child_pid" 2>/dev/null; then
+        kill -KILL "$child_pid" 2>/dev/null || true
+    fi
+    wait "$child_pid"
+    _tc_status=$?
+    child_pid=
+    return "$_tc_status"
+}
+trap "forward_signal 129" HUP
+trap "forward_signal 130" INT
+trap "forward_signal 143" TERM
 trap cleanup EXIT
 
 current_bytes=$(wc -c < "$spool_file")
@@ -128,16 +173,41 @@ function rotate(    command) {
 ' < "$fifo" &
 relay_pid=$!
 
+# POSIX sh has no wait -n. Probe both direct children instead of blocking on
+# the service: an unexpected relay exit must stop a still-running producer.
 set +e
-wait "$child_pid"
-status=$?
-child_pid=
-wait "$relay_pid"
-relay_status=$?
-relay_pid=
-set -e
-if [ "$status" -eq 0 ] && [ "$relay_status" -ne 0 ]; then status=$relay_status; fi
-exit "$status"
+while :; do
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+        wait "$child_pid"
+        status=$?
+        child_pid=
+        wait "$relay_pid"
+        relay_status=$?
+        relay_pid=
+        if [ -n "$signal_status" ]; then exit "$signal_status"; fi
+        if [ "$status" -eq 0 ] && [ "$relay_status" -ne 0 ]; then status=$relay_status; fi
+        exit "$status"
+    fi
+    if [ -n "$signal_status" ]; then
+        terminate_child
+        wait "$relay_pid"
+        relay_pid=
+        exit "$signal_status"
+    fi
+    if ! kill -0 "$relay_pid" 2>/dev/null; then
+        wait "$relay_pid"
+        relay_status=$?
+        relay_pid=
+        # An ignored TERM must not hang the wrapper: terminate_child bounds
+        # the grace and escalates to KILL.
+        terminate_child
+        # Even an unexpected successful relay exit means logs can no longer
+        # be delivered; do not report a healthy service exit.
+        if [ "$relay_status" -eq 0 ]; then relay_status=74; fi
+        exit "$relay_status"
+    fi
+    sleep 0.1
+done
 """.strip()
 
 

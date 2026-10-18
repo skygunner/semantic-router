@@ -315,9 +315,12 @@ print(json.dumps({"umask": inherited, "directory_modes": directories}))
 
 def test_bounded_log_spool_forwards_term_and_cleans_private_directory(tmp_path):
     service_script = """
-import signal, sys
+import signal, sys, time
 def stopped(signum, frame):
     print("service-stopped", flush=True)
+    # Keep the handler active across the wrapper's polling interval: a second
+    # TERM during cleanup would reenter the handler and emit duplicate output.
+    time.sleep(0.35)
     sys.exit(0)
 signal.signal(signal.SIGTERM, stopped)
 print("service-ready", flush=True)
@@ -342,6 +345,87 @@ signal.pause()
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.communicate(timeout=5)
+
+
+def test_bounded_log_spool_stops_child_when_relay_fails(tmp_path):
+    marker = tmp_path / "child-stopped"
+    service_script = (
+        "import pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, lambda *_: "
+        "(pathlib.Path(sys.argv[1]).touch(), sys.exit(0))); "
+        "print('ready', flush=True); time.sleep(30)"
+    )
+    process = subprocess.Popen(
+        _spool_command(tmp_path, sys.executable, "-c", service_script, str(marker)),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert select.select([process.stdout], [], [], 5)[0]
+        assert process.stdout.readline() == "ready\n"
+        children = Path(f"/proc/{process.pid}/task/{process.pid}/children")
+        if not children.exists():
+            pytest.skip("requires Linux procfs for relay injection")
+        relay = None
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and relay is None:
+            for pid in children.read_text().split():
+                command = Path(f"/proc/{pid}/comm")
+                if command.exists() and command.read_text().strip() == "awk":
+                    relay = int(pid)
+                    break
+            time.sleep(0.01)
+        assert relay is not None
+        os.kill(relay, signal.SIGKILL)
+        process.communicate(timeout=5)
+        assert process.returncode != 0
+        assert marker.exists()
+        assert not list(tmp_path.glob("vllm-sr-log-spool.*"))
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+
+def test_bounded_log_spool_escalates_to_kill_when_child_ignores_term(tmp_path):
+    service_script = (
+        "import signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "print('ready', flush=True); time.sleep(30)"
+    )
+    process = subprocess.Popen(
+        _spool_command(tmp_path, sys.executable, "-c", service_script),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert select.select([process.stdout], [], [], 5)[0]
+        assert process.stdout.readline() == "ready\n"
+        children = Path(f"/proc/{process.pid}/task/{process.pid}/children")
+        if not children.exists():
+            pytest.skip("requires Linux procfs for relay injection")
+        relay = None
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and relay is None:
+            for pid in children.read_text().split():
+                command = Path(f"/proc/{pid}/comm")
+                if command.exists() and command.read_text().strip() == "awk":
+                    relay = int(pid)
+                    break
+            time.sleep(0.01)
+        assert relay is not None
+        os.kill(relay, signal.SIGKILL)
+        # A TERM-ignoring service must not hang the wrapper: the shutdown is
+        # bounded (short TERM grace, then KILL) and leaves no orphan behind.
+        process.communicate(timeout=15)
+        assert process.returncode != 0
+        assert not list(tmp_path.glob("vllm-sr-log-spool.*"))
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
 
 
 def test_rootless_podman_retains_host_spool_group(monkeypatch):

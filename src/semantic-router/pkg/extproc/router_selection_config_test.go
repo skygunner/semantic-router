@@ -2,10 +2,13 @@ package extproc
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/config"
+	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/embedding"
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/selection"
 )
 
@@ -394,4 +397,106 @@ func assertStringSlice(t *testing.T, got, want []string, field string) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s = %v, want %v", field, got, want)
 	}
+}
+
+func TestSelectorInitBudgetCoversEveryModelPlusSlack(t *testing.T) {
+	cfg := &config.RouterConfig{
+		BackendModels: config.BackendModels{
+			ModelConfig: map[string]config.ModelParams{
+				"a": {Description: "fast"},
+				"b": {Description: "careful"},
+				"c": {Description: "cheap"},
+			},
+		},
+	}
+	cfg.EmbeddingModels.Endpoint.TimeoutSeconds = 2
+	if got := selectorInitBudget(cfg); got != 8*time.Second {
+		t.Fatalf("selectorInitBudget with endpoint timeout = %v, want 8s", got)
+	}
+
+	cfg.EmbeddingModels.Endpoint.TimeoutSeconds = 0
+	if got := selectorInitBudget(cfg); got != 4*embedding.DefaultTimeoutSeconds*time.Second {
+		t.Fatalf("selectorInitBudget without endpoint timeout = %v, want the provider default", got)
+	}
+
+	many := make(map[string]config.ModelParams, 8)
+	for _, name := range []string{"m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"} {
+		many[name] = config.ModelParams{Description: "described"}
+	}
+	cfg.BackendModels.ModelConfig = many
+	cfg.EmbeddingModels.Endpoint.TimeoutSeconds = 2
+	if got := selectorInitBudget(cfg); got != 18*time.Second {
+		t.Fatalf("selectorInitBudget for 8 models = %v, want 18s", got)
+	}
+}
+
+// Startup and reload both build selectors through createModelSelectorRegistry
+// (see router_build.go). The deadline has to be the one selectorInitBudget
+// derives, and a failed or cancelled build must not publish a partial set.
+func TestCreateModelSelectorRegistryBoundsRouterDCInit(t *testing.T) {
+	t.Run("slow endpoint", func(t *testing.T) {
+		cfg := routerDCInitBudgetConfig(t, 1)
+		started := time.Now()
+		var cause error
+		registry := createModelSelectorRegistry(cfg, nil, func(ctx context.Context, _ string, _ selection.EmbeddingConfig) ([]float32, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				return []float32{1}, nil
+			}
+			<-ctx.Done()
+			cause = ctx.Err()
+			return nil, cause
+		}, selection.EmbeddingConfig{})
+		t.Cleanup(func() { _ = registry.Close() })
+		elapsed := time.Since(started)
+		if cause != context.DeadlineExceeded {
+			t.Fatalf("init context err = %v, want deadline exceeded", cause)
+		}
+		if elapsed < 1500*time.Millisecond || elapsed > 5*time.Second {
+			t.Fatalf("slow init returned in %s, want about the 2s budget", elapsed)
+		}
+		if got := publishedRouterDCEmbeddings(t, registry); got != 0 {
+			t.Fatalf("published embeddings = %d, want 0", got)
+		}
+	})
+
+	t.Run("unreachable endpoint", func(t *testing.T) {
+		cfg := routerDCInitBudgetConfig(t, 1)
+		started := time.Now()
+		registry := createModelSelectorRegistry(cfg, nil, func(ctx context.Context, _ string, _ selection.EmbeddingConfig) ([]float32, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				return []float32{1}, nil
+			}
+			return nil, errors.New("embedding endpoint unreachable")
+		}, selection.EmbeddingConfig{})
+		t.Cleanup(func() { _ = registry.Close() })
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("unreachable init took %s", elapsed)
+		}
+		if got := publishedRouterDCEmbeddings(t, registry); got != 0 {
+			t.Fatalf("published embeddings = %d, want 0", got)
+		}
+	})
+}
+
+func routerDCInitBudgetConfig(t *testing.T, timeoutSeconds int) *config.RouterConfig {
+	t.Helper()
+	cfg := &config.RouterConfig{}
+	cfg.BackendModels.ModelConfig = map[string]config.ModelParams{
+		"described": {Description: "one model"},
+	}
+	cfg.EmbeddingModels.Endpoint.TimeoutSeconds = timeoutSeconds
+	return cfg
+}
+
+func publishedRouterDCEmbeddings(t *testing.T, registry *selection.Registry) int {
+	t.Helper()
+	selector, ok := registry.Get(selection.MethodRouterDC)
+	if !ok {
+		t.Fatal("RouterDC selector missing")
+	}
+	dc, ok := selector.(*selection.RouterDCSelector)
+	if !ok {
+		t.Fatalf("selector type = %T", selector)
+	}
+	return len(dc.GetModelEmbeddings())
 }

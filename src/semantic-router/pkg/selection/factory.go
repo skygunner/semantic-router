@@ -76,6 +76,7 @@ type Factory struct {
 	embeddingFunc          func(context.Context, string, EmbeddingConfig) ([]float32, error)
 	defaultEmbeddingConfig EmbeddingConfig
 	lookupTable            lookuptable.LookupTable
+	initCtx                context.Context
 }
 
 // EmbeddingConfig identifies an embedding space used by a selector.
@@ -153,6 +154,21 @@ func backgroundEmbeddingFunc(embed func(context.Context, string) ([]float32, err
 	}
 }
 
+// WithInitContext sets the context used for selector initialization that
+// performs external calls, such as RouterDC embedding preparation. Without
+// it initialization runs under context.Background().
+func (f *Factory) WithInitContext(ctx context.Context) *Factory {
+	f.initCtx = ctx
+	return f
+}
+
+func (f *Factory) initContext() context.Context {
+	if f.initCtx == nil {
+		return context.Background()
+	}
+	return f.initCtx
+}
+
 // WithLookupTable sets the lookup table used by selectors that support data-driven
 // constant resolution (e.g. HybridSelector's quality-gap threshold).
 func (f *Factory) WithLookupTable(lt lookuptable.LookupTable) *Factory {
@@ -181,7 +197,7 @@ func (f *Factory) Create() Selector {
 		}
 		// Initialize model embeddings from descriptions in model config
 		if f.modelConfig != nil {
-			if err := routerDCSelector.InitializeFromConfig(f.modelConfig); err != nil {
+			if err := routerDCSelector.InitializeFromConfigContext(f.initContext(), f.modelConfig); err != nil {
 				logging.Errorf("[SelectionFactory] RouterDC initialization failed: %v", err)
 			}
 		}
@@ -286,7 +302,7 @@ func (f *Factory) CreateAll() *Registry {
 	}
 	// Initialize model embeddings from descriptions in model config
 	if f.modelConfig != nil {
-		if err := routerDCSelector.InitializeFromConfig(f.modelConfig); err != nil {
+		if err := routerDCSelector.InitializeFromConfigContext(f.initContext(), f.modelConfig); err != nil {
 			logging.Errorf("[SelectionFactory] RouterDC initialization failed: %v", err)
 		}
 	}

@@ -130,24 +130,40 @@ func (r *RouterDCSelector) setContextEmbeddingFunc(f func(context.Context, strin
 // InitializeModelEmbeddings sets up model capability embeddings
 // Each model is represented by an embedding that captures its strengths
 func (r *RouterDCSelector) InitializeModelEmbeddings(modelDescriptions map[string]string) error {
+	return r.InitializeModelEmbeddingsContext(context.Background(), modelDescriptions)
+}
+
+// InitializeModelEmbeddingsContext builds embeddings without holding the state lock.
+func (r *RouterDCSelector) InitializeModelEmbeddingsContext(ctx context.Context, modelDescriptions map[string]string) error {
 	if r.embeddingFunc == nil {
 		return fmt.Errorf("embedding function not set")
 	}
-
-	r.embeddingMu.Lock()
-	defer r.embeddingMu.Unlock()
-
+	built := make(map[string][]float32)
 	for model, description := range modelDescriptions {
-		embedding, err := r.embeddingFunc(context.Background(), description)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		vector, err := r.embeddingFunc(ctx, description)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			logging.Warnf("[RouterDC] Failed to embed model %s description: %v", model, err)
 			continue
 		}
-		r.modelEmbeddings[model] = embedding
+		built[model] = vector
 	}
-
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.embeddingMu.Lock()
+	for model, vector := range built {
+		r.modelEmbeddings[model] = vector
+	}
+	count := len(r.modelEmbeddings)
+	r.embeddingMu.Unlock()
 	logging.ComponentDebugEvent("selection", "router_dc_embeddings_initialized", map[string]interface{}{
-		"models": len(r.modelEmbeddings),
+		"models": count,
 	})
 	return nil
 }
@@ -162,19 +178,26 @@ func (r *RouterDCSelector) SetModelEmbedding(model string, embedding []float32) 
 // InitializeFromConfig sets up model embeddings from ModelParams descriptions
 // This is the primary way to initialize RouterDC with model capability information
 func (r *RouterDCSelector) InitializeFromConfig(modelConfig map[string]config.ModelParams) error {
+	return r.InitializeFromConfigContext(context.Background(), modelConfig)
+}
+
+// InitializeFromConfigContext builds model embeddings before publishing them together.
+func (r *RouterDCSelector) InitializeFromConfigContext(ctx context.Context, modelConfig map[string]config.ModelParams) error {
 	if r.embeddingFunc == nil {
 		logging.Warnf("[RouterDC] No embedding function set, cannot initialize model embeddings")
 		return nil
 	}
 
-	r.embeddingMu.Lock()
-	defer r.embeddingMu.Unlock()
+	built := make(map[string][]float32)
 
 	modelsWithDescriptions := 0
 	modelsWithoutDescriptions := 0
 	var missingModels []string
 
 	for model, params := range modelConfig {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Build description text from description and capabilities
 		descText := r.buildDescriptionText(model, params)
 
@@ -185,7 +208,10 @@ func (r *RouterDCSelector) InitializeFromConfig(modelConfig map[string]config.Mo
 		}
 
 		// Compute embedding for the model description
-		vector, err := r.embeddingFunc(context.Background(), descText)
+		vector, err := r.embeddingFunc(ctx, descText)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if errors.Is(err, embedding.ErrModelNotPrepared) {
 			// A generation prepares this embedding model only for decisions that
 			// route with router_dc (or hybrid), so none of its decisions use it.
@@ -197,7 +223,7 @@ func (r *RouterDCSelector) InitializeFromConfig(modelConfig map[string]config.Mo
 			continue
 		}
 
-		r.modelEmbeddings[model] = vector
+		built[model] = vector
 		modelsWithDescriptions++
 		logging.ComponentDebugEvent("selection", "router_dc_model_embedding_initialized", map[string]interface{}{
 			"model": model,
@@ -215,6 +241,14 @@ func (r *RouterDCSelector) InitializeFromConfig(modelConfig map[string]config.Mo
 			len(missingModels), missingModels)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.embeddingMu.Lock()
+	for model, vector := range built {
+		r.modelEmbeddings[model] = vector
+	}
+	r.embeddingMu.Unlock()
 	return nil
 }
 

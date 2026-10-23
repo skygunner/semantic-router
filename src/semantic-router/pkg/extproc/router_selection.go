@@ -68,6 +68,11 @@ func createModelSelectorRegistry(
 	if lt != nil {
 		selectionFactory = selectionFactory.WithLookupTable(lt)
 	}
+	// Selector initialization performs external embedding calls, so it must
+	// stay bounded instead of running under a bare background context.
+	initCtx, cancelInit := context.WithTimeout(context.Background(), selectorInitBudget(cfg))
+	defer cancelInit()
+	selectionFactory = selectionFactory.WithInitContext(initCtx)
 
 	registry := selectionFactory.CreateAll()
 
@@ -82,6 +87,23 @@ func createModelSelectorRegistry(
 		"mode": "per_decision_algorithm_config",
 	})
 	return registry
+}
+
+// selectorInitBudget bounds RouterDC selector initialization. Each model
+// description costs at most one embedding request limited by the endpoint's
+// configured timeout, so the budget covers every configured model plus one
+// call of slack; a slow or unreachable embedding endpoint then fails the
+// initialization instead of blocking startup or reload indefinitely.
+func selectorInitBudget(cfg *config.RouterConfig) time.Duration {
+	perCall := time.Duration(cfg.EmbeddingModels.Endpoint.TimeoutSeconds) * time.Second
+	if perCall <= 0 {
+		perCall = embedding.DefaultTimeoutSeconds * time.Second
+	}
+	models := 1
+	if cfg.BackendModels.ModelConfig != nil {
+		models = len(cfg.BackendModels.ModelConfig)
+	}
+	return time.Duration(models+1) * perCall
 }
 
 func resolveSelectionEmbeddingFunc(cfg *config.RouterConfig, sets ...*embedding.Set) (func(context.Context, string, selection.EmbeddingConfig) ([]float32, error), selection.EmbeddingConfig) {

@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	maxErrorBodyBytes       = 4096
-	defaultTimeoutSeconds   = 10
+	maxErrorBodyBytes = 4096
+	// DefaultTimeoutSeconds bounds an embedding request when the endpoint
+	// config sets no timeout_seconds.
+	DefaultTimeoutSeconds   = 10
 	defaultMaxResponseBytes = 16 * 1024 * 1024
 	baseRetryDelay          = 50 * time.Millisecond
 	maxRetryDelay           = 500 * time.Millisecond
@@ -106,7 +108,7 @@ func NewOpenAICompatibleProvider(cfg OpenAICompatibleConfig) (*OpenAICompatibleP
 
 	timeout := config.DurationFromSeconds(cfg.TimeoutSeconds)
 	if timeout == 0 {
-		timeout = time.Duration(defaultTimeoutSeconds) * time.Second
+		timeout = time.Duration(DefaultTimeoutSeconds) * time.Second
 	}
 	client := cfg.HTTPClient
 	if client == nil {

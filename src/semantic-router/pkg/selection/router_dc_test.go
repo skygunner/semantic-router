@@ -18,8 +18,10 @@ package selection
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/config"
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/embedding"
@@ -102,5 +104,113 @@ func TestRouterDCSelector_InitializeFromConfigStopsWhenEmbeddingModelIsNotPrepar
 	}
 	if len(selector.modelEmbeddings) != 0 {
 		t.Fatalf("model embeddings = %v, want none", selector.modelEmbeddings)
+	}
+}
+
+func TestRouterDCInitializationBuildsOutsideLockAndCancelsAtomically(t *testing.T) {
+	r := NewRouterDCSelector(DefaultRouterDCConfig())
+	r.SetModelEmbedding("existing", []float32{1})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r.setContextEmbeddingFunc(func(ctx context.Context, text string) ([]float32, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []float32{2}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- r.InitializeFromConfigContext(ctx, map[string]config.ModelParams{"new": {Description: "new model"}})
+	}()
+	<-entered
+	read := make(chan map[string][]float32, 1)
+	go func() { read <- r.GetModelEmbeddings() }()
+	select {
+	case models := <-read:
+		if len(models) != 1 || models["existing"][0] != 1 {
+			t.Fatalf("observed partial state: %v", models)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("state read blocked by embedding build")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	if _, ok := r.GetModelEmbeddings()["new"]; ok {
+		t.Fatal("cancelled build published embedding")
+	}
+	close(release)
+}
+
+func TestFactoryCreateAllPassesInitContextToRouterDC(t *testing.T) {
+	initCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var gotCtx context.Context
+	registry := NewFactory(&ModelSelectionConfig{Method: string(MethodRouterDC)}).
+		WithModelConfig(map[string]config.ModelParams{"model": {Description: "fast"}}).
+		WithContextEmbeddingFunc(func(ctx context.Context, _ string, _ EmbeddingConfig) ([]float32, error) {
+			gotCtx = ctx
+			return []float32{1}, nil
+		}, EmbeddingConfig{}).
+		WithInitContext(initCtx).
+		CreateAll()
+	selector, ok := registry.Get(MethodRouterDC)
+	if !ok {
+		t.Fatal("RouterDC selector missing from the created registry")
+	}
+	dc, ok := selector.(*RouterDCSelector)
+	if !ok {
+		t.Fatalf("registry selector type = %T", selector)
+	}
+	if len(dc.GetModelEmbeddings()) != 1 {
+		t.Fatalf("published embeddings = %d, want 1", len(dc.GetModelEmbeddings()))
+	}
+	if gotCtx != initCtx {
+		t.Fatal("the embedding func did not receive the factory init context")
+	}
+}
+
+func TestFactoryInitContextCancellationLeavesNoPartialEmbeddings(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	type registryResult struct {
+		registry *Registry
+	}
+	done := make(chan registryResult, 1)
+	go func() {
+		done <- registryResult{NewFactory(&ModelSelectionConfig{Method: string(MethodRouterDC)}).
+			WithModelConfig(map[string]config.ModelParams{"model": {Description: "slow"}}).
+			WithContextEmbeddingFunc(func(ctx context.Context, _ string, _ EmbeddingConfig) ([]float32, error) {
+				close(started)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}, EmbeddingConfig{}).
+			WithInitContext(ctx).
+			CreateAll()}
+	}()
+	<-started
+	cancel()
+	select {
+	case result := <-done:
+		selector, ok := result.registry.Get(MethodRouterDC)
+		if !ok {
+			t.Fatal("RouterDC selector missing from the created registry")
+		}
+		dc, ok := selector.(*RouterDCSelector)
+		if !ok {
+			t.Fatalf("registry selector type = %T", selector)
+		}
+		if embeddings := dc.GetModelEmbeddings(); len(embeddings) != 0 {
+			t.Fatalf("cancelled initialization published %d embeddings, want 0", len(embeddings))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CreateAll did not return after the init context was cancelled")
 	}
 }

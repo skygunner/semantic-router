@@ -19,6 +19,16 @@
           "code": "unknown_stream_delta"
         }
       }
+    },
+    {
+      "name": "redacted_thinking",
+      "outcome": {
+        "status": "error",
+        "error": {
+          "category": "unsupported_feature",
+          "code": "redacted_reasoning"
+        }
+      }
     }
   ]
 }

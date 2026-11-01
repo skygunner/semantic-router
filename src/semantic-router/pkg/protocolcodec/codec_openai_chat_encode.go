@@ -233,6 +233,9 @@ func (state *chatMessageEncodingState) appendContent(content llmprotocol.Content
 	case llmprotocol.ContentRefusal:
 		return appendChatTextField(&state.wire.Refusal, content)
 	case llmprotocol.ContentReasoning:
+		if err := rejectRedactedReasoning(&content); err != nil {
+			return err
+		}
 		return appendChatTextField(&state.wire.Reasoning, content)
 	case llmprotocol.ContentImage:
 		return state.appendImage(content)

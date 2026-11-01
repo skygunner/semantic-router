@@ -354,6 +354,11 @@ func decodeAnthropicContentStart(wire anthropicEventWire) (llmprotocol.Event, er
 			Kind: llmprotocol.ContentReasoning, Signature: wire.ContentBlock.Signature,
 			Reasoning: llmprotocol.ReasoningScopeText,
 		}
+	case "redacted_thinking":
+		event.Content = &llmprotocol.Content{
+			Kind: llmprotocol.ContentReasoning, Data: wire.ContentBlock.Data,
+			Reasoning: llmprotocol.ReasoningScopeRedacted,
+		}
 	case "text":
 		event.Content = &llmprotocol.Content{Kind: llmprotocol.ContentText}
 	default:
@@ -691,6 +696,9 @@ func (encoder *anthropicStreamEncoder) encodeAnthropicItemStart(
 			signature = event.Content.Signature
 		}
 		block.Type, block.Text, block.Thinking, block.Signature = "thinking", "", "", signature
+		if event.Content != nil && event.Content.Reasoning == llmprotocol.ReasoningScopeRedacted {
+			block.Type, block.Data = "redacted_thinking", event.Content.Data
+		}
 	}
 	return anthropicEventWire{Type: "content_block_start", Index: anthropicIndex(encoder.blockIndexes[key]), ContentBlock: block}
 }

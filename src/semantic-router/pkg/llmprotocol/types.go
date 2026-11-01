@@ -66,8 +66,9 @@ const (
 )
 
 const (
-	ReasoningScopeText    ReasoningScope = "text"
-	ReasoningScopeSummary ReasoningScope = "summary"
+	ReasoningScopeText     ReasoningScope = "text"
+	ReasoningScopeSummary  ReasoningScope = "summary"
+	ReasoningScopeRedacted ReasoningScope = "redacted"
 )
 
 // Content is one ordered semantic block. Fields are closed by Kind. Data and

@@ -501,17 +501,17 @@ func TestOfficialAnthropicToolChoiceUnionIsClosedAndPositionScoped(t *testing.T)
 }
 
 func TestOfficialAnthropicContentBlockUnionsAreClosed(t *testing.T) {
-	requestSupported := fields("document", "image", "text", "thinking", "tool_result", "tool_use")
+	requestSupported := fields("document", "image", "redacted_thinking", "text", "thinking", "tool_result", "tool_use")
 	requestUnsupported := fields(
 		"bash_code_execution_tool_result", "code_execution_tool_result", "container_upload",
-		"redacted_thinking", "search_result", "server_tool_use",
+		"search_result", "server_tool_use",
 		"text_editor_code_execution_tool_result", "tool_search_tool_result",
 		"web_fetch_tool_result", "web_search_tool_result",
 	)
-	responseSupported := fields("text", "thinking", "tool_use")
+	responseSupported := fields("redacted_thinking", "text", "thinking", "tool_use")
 	responseUnsupported := fields(
 		"bash_code_execution_tool_result", "code_execution_tool_result", "container_upload",
-		"redacted_thinking", "server_tool_use", "text_editor_code_execution_tool_result",
+		"server_tool_use", "text_editor_code_execution_tool_result",
 		"tool_search_tool_result", "web_fetch_tool_result", "web_search_tool_result",
 	)
 	assertClosedDiscriminatorInventory(t, "Anthropic request content block", 16, requestSupported, requestUnsupported)

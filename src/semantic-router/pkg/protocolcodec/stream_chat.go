@@ -847,6 +847,9 @@ func (encoder *chatStreamEncoder) applyChunkEvent(
 	case llmprotocol.EventResponseStarted:
 		encoder.startChatItem(choice)
 	case llmprotocol.EventOutputItemStarted:
+		if err := rejectRedactedReasoning(event.Content); err != nil {
+			return nil, false, err
+		}
 		return nil, encoder.startChatItem(choice), nil
 	case llmprotocol.EventOutputTextDelta:
 		applyChatTextDelta(event, choice)

@@ -682,12 +682,18 @@ func validateTextContent(content Content, limits Limits) error {
 	}
 	if content.Kind == ContentReasoning {
 		switch content.Reasoning {
-		case "", ReasoningScopeText, ReasoningScopeSummary:
+		case "", ReasoningScopeText, ReasoningScopeSummary, ReasoningScopeRedacted:
 		default:
 			return NewError(ErrorInvalidRequest, "invalid_reasoning_scope", "reasoning content scope is unsupported", nil)
 		}
 		if content.Reasoning == ReasoningScopeSummary && content.Signature != "" {
 			return NewError(ErrorInvalidRequest, "invalid_reasoning_signature", "reasoning summaries cannot carry a private reasoning signature", nil)
+		}
+		if content.Reasoning == ReasoningScopeRedacted {
+			if content.Data == "" || content.Text != "" || content.Signature != "" {
+				return NewError(ErrorInvalidRequest, "invalid_redacted_reasoning", "redacted reasoning carries exactly one opaque data payload", nil)
+			}
+			return nil
 		}
 	}
 	if content.Kind != ContentText && len(content.Citations) != 0 {
@@ -697,7 +703,8 @@ func validateTextContent(content Content, limits Limits) error {
 }
 
 func hasNonTextFields(content Content) bool {
-	return content.ToolCall != nil || content.ToolResult != nil || content.GeneratedImage != nil || content.URL != "" || content.Data != "" ||
+	return content.ToolCall != nil || content.ToolResult != nil || content.GeneratedImage != nil || content.URL != "" ||
+		(content.Data != "" && content.Reasoning != ReasoningScopeRedacted) ||
 		content.FileID != "" || content.Filename != "" || content.MediaType != "" || content.Detail != "" ||
 		(content.Kind != ContentReasoning && (content.Signature != "" || content.Reasoning != ""))
 }

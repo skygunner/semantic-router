@@ -26,7 +26,7 @@
         "status": "error",
         "error": {
           "category": "unsupported_feature",
-          "code": "redacted_reasoning"
+          "code": "unsupported_capability"
         }
       }
     }

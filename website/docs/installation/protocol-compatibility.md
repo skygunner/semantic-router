@@ -129,6 +129,11 @@ an OpenAI-compatible server can accept the Chat request shape while rejecting
 images or tools for a particular model. Qualify the actual endpoint and model
 revision before adding them to a routing pool.
 
+Anthropic `redacted_thinking` blocks retain their opaque `data` unchanged in
+Messages requests, responses, and streams, including replay. Chat Completions
+and Responses targets cannot preserve this payload and reject it with a typed
+`unsupported_feature` / `unsupported_capability` error.
+
 When translating Chat history to an Anthropic Messages backend, empty text
 blocks are omitted. An assistant's `content: ""` beside `tool_calls` therefore
 behaves like `content: null`. Empty tool results keep their call IDs and use

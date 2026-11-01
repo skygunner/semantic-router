@@ -106,9 +106,6 @@ func (encoder *responsesStreamEncoder) encodeResponsesItemStart(event llmprotoco
 		return frames, err
 	}
 	if event.Content != nil && event.Content.Kind == llmprotocol.ContentReasoning {
-		if err := rejectRedactedReasoning(event.Content); err != nil {
-			return nil, err
-		}
 		key := contentKey(event)
 		encoder.encodedKinds[key] = llmprotocol.ContentReasoning
 		// An item-start event may identify a reasoning item without identifying

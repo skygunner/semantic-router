@@ -87,6 +87,26 @@ func TestCapabilitiesFilterBeforeScoringAndPreserveExactWinner(t *testing.T) {
 	}
 }
 
+func TestRedactedThinkingFiltersIncompatibleCandidates(t *testing.T) {
+	for _, format := range []string{config.APIFormatOpenAI, config.APIFormatResponses} {
+		t.Run(format, func(t *testing.T) {
+			router, decision, _ := capabilityRankingTestRouter(t, format, 80)
+			request := testNeutralRequest("virtual", "hello")
+			request.Messages = append(request.Messages, llmprotocol.Message{Role: llmprotocol.RoleAssistant, Content: []llmprotocol.Content{{
+				Kind: llmprotocol.ContentReasoning, Reasoning: llmprotocol.ReasoningScopeRedacted, Data: "opaque",
+			}}})
+			ctx := routingTestContext(llmprotocol.AnthropicMessagesV1, request)
+			ctx.VSRSelectedDecision = decision
+			_, err := router.capabilityEligibleSelectionContext(&selection.SelectionContext{
+				DecisionName: decision.Name, CandidateModels: []config.ModelRef{decision.ModelRefs[0]},
+			}, decision.Algorithm, ctx)
+			require.Error(t, err, "an incompatible candidate passed selection")
+			_, err = router.prepareProviderDispatch(request, "A", decision.Name, false, ctx)
+			require.Error(t, err, "an incompatible candidate passed dispatch")
+		})
+	}
+}
+
 func TestCapabilitiesRejectEmptyAndInsufficientPoolsBeforeScoring(t *testing.T) {
 	for _, test := range []struct {
 		name    string

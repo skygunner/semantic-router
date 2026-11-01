@@ -255,9 +255,6 @@ func (state *responsesMessageEncodingState) appendContent(content llmprotocol.Co
 		}
 		return state.appendToolResult(content.ToolResult)
 	case llmprotocol.ContentReasoning:
-		if err := rejectRedactedReasoning(&content); err != nil {
-			return err
-		}
 		if err := state.flushOrdinary(); err != nil {
 			return err
 		}

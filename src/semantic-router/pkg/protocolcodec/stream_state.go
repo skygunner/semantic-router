@@ -410,6 +410,11 @@ func (state *streamState) observeReasoningScope(key streamContentKey, event llmp
 		return nil
 	}
 	scope := event.Content.Reasoning
+	if scope == llmprotocol.ReasoningScopeRedacted {
+		if err := llmprotocol.ValidateRedactedReasoning(*event.Content, state.policy.Limits); err != nil {
+			return upstreamSemanticValidationError(err)
+		}
+	}
 	if scope != llmprotocol.ReasoningScopeText && scope != llmprotocol.ReasoningScopeSummary &&
 		scope != llmprotocol.ReasoningScopeRedacted {
 		return llmprotocol.NewError(

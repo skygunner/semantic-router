@@ -328,6 +328,9 @@ func RequiredResponseCapabilities(response Response) CapabilitySet {
 // has no approximation in another public wire format.
 func RequiredEventCapabilities(event Event) CapabilitySet {
 	var required CapabilitySet
+	if event.Content != nil && event.Content.Kind == ContentReasoning && event.Content.Reasoning == ReasoningScopeRedacted {
+		required.bits |= CapabilityReasoningSignature
+	}
 	if event.MatchedStopSequence != "" {
 		required.bits |= CapabilityMatchedStopSequence
 	}
@@ -356,7 +359,7 @@ func capabilityForRequestContent(content Content) Capability {
 	case ContentToolResult:
 		return requestToolResultCapabilities(content.ToolResult) | cache
 	case ContentReasoning:
-		return reasoningContentCapabilities(content.Signature) | cache
+		return reasoningContentCapabilities(content) | cache
 	case ContentGeneratedImage:
 		return CapabilityImageGeneration | cache
 	default:
@@ -375,7 +378,7 @@ func capabilityForResponseContent(content Content) Capability {
 	case ContentToolResult:
 		return responseToolResultCapabilities(content.ToolResult)
 	case ContentReasoning:
-		return reasoningContentCapabilities(content.Signature)
+		return reasoningContentCapabilities(content)
 	case ContentGeneratedImage:
 		return CapabilityImageGeneration
 	default:
@@ -431,9 +434,9 @@ func responseToolResultCapabilities(result *ToolResult) Capability {
 	return capabilities
 }
 
-func reasoningContentCapabilities(signature string) Capability {
+func reasoningContentCapabilities(content Content) Capability {
 	capabilities := CapabilityText | CapabilityReasoning
-	if signature != "" {
+	if content.Signature != "" || content.Reasoning == ReasoningScopeRedacted {
 		capabilities |= CapabilityReasoningSignature
 	}
 	return capabilities

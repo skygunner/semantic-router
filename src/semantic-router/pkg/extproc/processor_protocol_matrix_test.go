@@ -138,6 +138,43 @@ func TestExtProcAcceptsAnthropicToolUseCallerProvenance(t *testing.T) {
 	})
 }
 
+func TestExtProcRedactedThinkingStreamCompletesAndReplays(t *testing.T) {
+	router := &OpenAIRouter{}
+	ctx := &RequestContext{
+		SourceFormat: llmprotocol.AnthropicMessagesV1, TargetFormat: llmprotocol.AnthropicMessagesV1,
+		RequestModel: "public-model", TraceContext: t.Context(),
+	}
+	fixture := string(extProcStreamFixture(llmprotocol.AnthropicMessagesV1))
+	fixture = strings.Replace(fixture,
+		`{"type":"text","text":""}`,
+		`{"type":"redacted_thinking","data":"opaque"}`, 1)
+	start := strings.Index(fixture, "event: content_block_delta")
+	end := strings.Index(fixture[start:], "\n\n")
+	fixture = fixture[:start] + fixture[start+end+2:]
+	response := router.handleSemanticStreamingResponseBody([]byte(fixture), true, ctx)
+	if ctx.StreamingAborted || !ctx.StreamingComplete || ctx.SemanticResponse == nil {
+		t.Fatalf("redacted stream failed reconstruction: aborted=%v complete=%v response=%+v", ctx.StreamingAborted, ctx.StreamingComplete, ctx.SemanticResponse)
+	}
+	if response.GetResponseBody() == nil || response.GetResponseBody().GetResponse().GetBodyMutation() != nil {
+		t.Fatal("successful same-format stream was rewritten")
+	}
+	content := ctx.SemanticResponse.Output[0].Content[0]
+	if content.Reasoning != llmprotocol.ReasoningScopeRedacted || content.Data != "opaque" {
+		t.Fatalf("redacted content was lost: %+v", content)
+	}
+	wire, err := router.encodeClientResponse(*ctx.SemanticResponse, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, _, _, err := protocolcodec.NewBuiltinEngine().DecodeResponse(llmprotocol.AnthropicMessagesV1, wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Output[0].Content[0].Data != "opaque" {
+		t.Fatalf("buffered replay lost redacted payload: %s", wire)
+	}
+}
+
 // HTTP failures have a separate wire contract from failed model-generation
 // resources. This matrix locks the response-header/body seam so every backend
 // error envelope is rendered for every client without becoming a 2xx response.

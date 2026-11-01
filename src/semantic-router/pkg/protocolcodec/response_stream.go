@@ -138,7 +138,9 @@ func groupResponseStreamContent(contents []llmprotocol.Content) []responseStream
 	groups := make([]responseStreamContentGroup, 0, len(contents))
 	for _, content := range contents {
 		family := responseStreamContentFamily(content.Kind)
-		if family == llmprotocol.ContentToolCall || len(groups) == 0 || groups[len(groups)-1].family != family {
+		if family == llmprotocol.ContentToolCall || content.Reasoning == llmprotocol.ReasoningScopeRedacted ||
+			len(groups) == 0 || groups[len(groups)-1].family != family ||
+			groups[len(groups)-1].contents[0].Reasoning == llmprotocol.ReasoningScopeRedacted {
 			groups = append(groups, responseStreamContentGroup{family: family})
 		}
 		groups[len(groups)-1].contents = append(groups[len(groups)-1].contents, content)
@@ -173,6 +175,11 @@ func neutralContentGroupEvents(
 	completed := started
 	completed.Type = llmprotocol.EventOutputItemCompleted
 	completed.StopReason = context.response.StopReason
+	if len(group.contents) == 1 && group.contents[0].Reasoning == llmprotocol.ReasoningScopeRedacted {
+		content := group.contents[0]
+		started.Content = &content
+		return []llmprotocol.Event{started, completed}, nil
+	}
 	if group.family == llmprotocol.ContentToolCall {
 		if len(group.contents) != 1 {
 			return nil, llmprotocol.NewError(

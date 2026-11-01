@@ -135,6 +135,15 @@ func validateAnthropicStreamEvent(wire anthropicEventWire, body []byte) error {
 	if err := validateAnthropicEventPayload(wire); err != nil {
 		return err
 	}
+	if wire.Type == "content_block_start" && wire.ContentBlock.Type == "redacted_thinking" {
+		fields, err := providerEventFields(body)
+		if err != nil {
+			return err
+		}
+		if err := validateAnthropicContentVariant(fields["content_block"], wire.ContentBlock.Type, true); err != nil {
+			return err
+		}
+	}
 	return validateAnthropicEventFieldPresence(wire.Type, body)
 }
 

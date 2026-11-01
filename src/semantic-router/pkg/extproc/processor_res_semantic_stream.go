@@ -32,14 +32,13 @@ type semanticResponseStreamState struct {
 }
 
 type semanticStreamItem struct {
-	id           string
-	role         llmprotocol.Role
-	text         string
-	refusal      string
-	reasoning    string
-	reasoningSig string
-	toolCall     *llmprotocol.ToolCall
-	completed    bool
+	id        string
+	role      llmprotocol.Role
+	text      string
+	refusal   string
+	reasoning *llmprotocol.Content
+	toolCall  *llmprotocol.ToolCall
+	completed bool
 }
 
 func (r *OpenAIRouter) handleSemanticStreamingResponseBody(
@@ -275,7 +274,8 @@ func (state *semanticResponseStreamState) observe(events []llmprotocol.Event) {
 				item.toolCall = &call
 			}
 			if event.Content != nil && event.Content.Kind == llmprotocol.ContentReasoning {
-				item.reasoningSig = event.Content.Signature
+				content := *event.Content
+				item.reasoning = &content
 			}
 		case llmprotocol.EventOutputTextDelta:
 			item := state.item(event.ItemIndex)
@@ -286,9 +286,17 @@ func (state *semanticResponseStreamState) observe(events []llmprotocol.Event) {
 			}
 		case llmprotocol.EventReasoningDelta:
 			item := state.item(event.ItemIndex)
-			item.reasoning += event.Delta
-			if event.Content != nil && event.Content.Signature != "" {
-				item.reasoningSig = event.Content.Signature
+			if item.reasoning == nil {
+				item.reasoning = &llmprotocol.Content{Kind: llmprotocol.ContentReasoning}
+			}
+			item.reasoning.Text += event.Delta
+			if event.Content != nil {
+				if event.Content.Signature != "" {
+					item.reasoning.Signature = event.Content.Signature
+				}
+				if event.Content.Reasoning != "" {
+					item.reasoning.Reasoning = event.Content.Reasoning
+				}
 			}
 		case llmprotocol.EventToolCallDelta:
 			item := state.item(event.ItemIndex)
@@ -349,11 +357,8 @@ func (state *semanticResponseStreamState) response() (*llmprotocol.Response, err
 			return nil, fmt.Errorf("semantic stream output item is incomplete")
 		}
 		contents := make([]llmprotocol.Content, 0, 4)
-		if item.reasoning != "" || item.reasoningSig != "" {
-			contents = append(contents, llmprotocol.Content{
-				Kind: llmprotocol.ContentReasoning, Text: item.reasoning,
-				Signature: item.reasoningSig,
-			})
+		if item.reasoning != nil && (item.reasoning.Text != "" || item.reasoning.Signature != "" || item.reasoning.Data != "") {
+			contents = append(contents, *item.reasoning)
 		}
 		if item.refusal != "" {
 			contents = append(contents, llmprotocol.Content{Kind: llmprotocol.ContentRefusal, Text: item.refusal})

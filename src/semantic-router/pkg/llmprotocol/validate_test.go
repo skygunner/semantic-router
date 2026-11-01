@@ -123,6 +123,61 @@ func TestValidateContentClosesReasoningScope(t *testing.T) {
 	}
 }
 
+func TestRedactedReasoningValidation(t *testing.T) {
+	limits := DefaultPolicy().Limits
+	limits.MediaDataBytes = 6
+	valid := Content{Kind: ContentReasoning, Reasoning: ReasoningScopeRedacted, Data: "opaque"}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Content)
+		code   string
+	}{
+		{"valid", func(*Content) {}, ""},
+		{"missing data", func(content *Content) { content.Data = "" }, "invalid_redacted_reasoning"},
+		{"text", func(content *Content) { content.Text = "foreign" }, "invalid_redacted_reasoning"},
+		{"signature", func(content *Content) { content.Signature = "foreign" }, "invalid_redacted_reasoning"},
+		{"citations", func(content *Content) { content.Citations = []Citation{{URL: "https://example.com"}} }, "invalid_content"},
+		{"oversized data", func(content *Content) { content.Data += "x" }, "media_data_limit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := valid
+			test.mutate(&content)
+			request := validSemanticRequest()
+			request.Messages = []Message{{Role: RoleAssistant, Content: []Content{content}}}
+			response := Response{
+				Generation: 1, ID: "response", StopReason: StopEndTurn, Usage: Usage{State: UsageUnavailable},
+				Output: []OutputItem{{ID: "item", Role: RoleAssistant, Content: []Content{content}}},
+			}
+			for _, err := range []error{ValidateRequest(request, limits), ValidateResponse(response, limits)} {
+				if test.code != "" {
+					requireLLMProtocolErrorCode(t, err, test.code)
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactedReasoningRequiresOpaqueFidelity(t *testing.T) {
+	content := Content{Kind: ContentReasoning, Reasoning: ReasoningScopeRedacted, Data: "opaque"}
+	request := validSemanticRequest()
+	request.Messages = []Message{{Role: RoleAssistant, Content: []Content{content}}}
+	response := Response{Output: []OutputItem{{Content: []Content{content}}}}
+	for name, required := range map[string]CapabilitySet{
+		"request":     RequiredCapabilities(request),
+		"response":    RequiredResponseCapabilities(response),
+		"start event": RequiredEventCapabilities(Event{Type: EventOutputItemStarted, Content: &content}),
+		"delta event": RequiredEventCapabilities(Event{Type: EventReasoningDelta, Content: &content}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !required.Supports(CapabilityReasoningSignature) {
+				t.Fatalf("redacted reasoning lacks opaque fidelity capability: %v", required.Names())
+			}
+		})
+	}
+}
+
 func TestMatchedStopSequenceIsResponseOnlyCapability(t *testing.T) {
 	response := Response{MatchedStopSequence: "END"}
 	if required := RequiredResponseCapabilities(response); !required.Supports(CapabilityMatchedStopSequence) {

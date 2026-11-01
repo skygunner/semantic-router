@@ -680,6 +680,9 @@ func validateTextContent(content Content, limits Limits) error {
 	if hasNonTextFields(content) {
 		return NewError(ErrorInvalidRequest, "invalid_content", "text content contains fields from another content kind", nil)
 	}
+	if content.Kind != ContentText && len(content.Citations) != 0 {
+		return NewError(ErrorInvalidRequest, "invalid_content", "only text content may contain citations", nil)
+	}
 	if content.Kind == ContentReasoning {
 		switch content.Reasoning {
 		case "", ReasoningScopeText, ReasoningScopeSummary, ReasoningScopeRedacted:
@@ -690,16 +693,21 @@ func validateTextContent(content Content, limits Limits) error {
 			return NewError(ErrorInvalidRequest, "invalid_reasoning_signature", "reasoning summaries cannot carry a private reasoning signature", nil)
 		}
 		if content.Reasoning == ReasoningScopeRedacted {
-			if content.Data == "" || content.Text != "" || content.Signature != "" {
-				return NewError(ErrorInvalidRequest, "invalid_redacted_reasoning", "redacted reasoning carries exactly one opaque data payload", nil)
-			}
-			return nil
+			return ValidateRedactedReasoning(content, limits)
 		}
 	}
-	if content.Kind != ContentText && len(content.Citations) != 0 {
-		return NewError(ErrorInvalidRequest, "invalid_content", "only text content may contain citations", nil)
-	}
 	return ValidateTextCitations(content.Text, content.Citations, limits)
+}
+
+// ValidateRedactedReasoning checks the complete opaque payload carried by a
+// redacted reasoning block, including blocks supplied on stream item starts.
+func ValidateRedactedReasoning(content Content, limits Limits) error {
+	if content.Kind != ContentReasoning || content.Reasoning != ReasoningScopeRedacted ||
+		content.Data == "" || content.Text != "" || content.Signature != "" ||
+		len(content.Citations) != 0 || hasNonTextFields(content) {
+		return NewError(ErrorInvalidRequest, "invalid_redacted_reasoning", "redacted reasoning carries exactly one opaque data payload", nil)
+	}
+	return validateMediaBounds(content, limits)
 }
 
 func hasNonTextFields(content Content) bool {

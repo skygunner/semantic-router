@@ -58,6 +58,7 @@ const (
 	// a JSON Schema function tool cannot represent.
 	CapabilityCustomTools
 	CapabilityTextVerbosity
+	CapabilityReasoningContinuity
 )
 
 // CapabilitySet is an immutable value bitset.
@@ -145,6 +146,7 @@ func (set CapabilitySet) Names() []string {
 		{CapabilityImageGeneration, "image_generation"},
 		{CapabilityCustomTools, "custom_tools"},
 		{CapabilityTextVerbosity, "text_verbosity"},
+		{CapabilityReasoningContinuity, "reasoning_continuity"},
 	}
 	names := make([]string, 0, len(known))
 	for _, item := range known {
@@ -331,6 +333,9 @@ func RequiredEventCapabilities(event Event) CapabilitySet {
 	if event.Content != nil && event.Content.Kind == ContentReasoning && event.Content.Reasoning == ReasoningScopeRedacted {
 		required.bits |= CapabilityReasoningSignature
 	}
+	if event.Content != nil && event.Content.ReasoningDetail != nil {
+		required.bits |= CapabilityReasoningContinuity
+	}
 	if event.MatchedStopSequence != "" {
 		required.bits |= CapabilityMatchedStopSequence
 	}
@@ -435,6 +440,9 @@ func responseToolResultCapabilities(result *ToolResult) Capability {
 }
 
 func reasoningContentCapabilities(content Content) Capability {
+	if content.ReasoningDetail != nil {
+		return CapabilityReasoning | CapabilityReasoningContinuity
+	}
 	capabilities := CapabilityText | CapabilityReasoning
 	if content.Signature != "" || content.Reasoning == ReasoningScopeRedacted {
 		capabilities |= CapabilityReasoningSignature
@@ -482,6 +490,7 @@ func ParseCapabilities(names []string) (CapabilitySet, error) {
 		"image_generation":      CapabilityImageGeneration,
 		"custom_tools":          CapabilityCustomTools,
 		"text_verbosity":        CapabilityTextVerbosity,
+		"reasoning_continuity":  CapabilityReasoningContinuity,
 	}
 	var set CapabilitySet
 	for _, name := range names {
